@@ -5,11 +5,14 @@ import logging
 
 import streamlit as st
 
-from components.charts import make_boll_chart, make_candlestick_chart, make_line_chart, make_macd_chart
+from components.candlestick_chart import create_candlestick_figure
+from components.charts import make_boll_chart, make_line_chart, make_macd_chart
 from components.indicator_cards import render_status_cards
 from components.stock_summary import render_stock_summary
-from services.indicators import IndicatorStatus, calculate_indicators, latest_statuses
-from services.market_data import LatestQuote, MarketDataError, StockHistory, YahooMarketDataProvider, default_history_range
+from services.indicators import IndicatorStatus, latest_statuses
+from services.analysis_cache import cached_calculate_indicators, cached_prepare_chart_data
+from services.chart_data import ChartDataError, filter_data_by_period
+from services.market_data import LatestQuote, MarketDataError, StockHistory, YahooMarketDataProvider, full_history_range
 from utils.validators import validate_security_symbol
 from utils.logging_config import configure_logging
 
@@ -19,8 +22,9 @@ st.set_page_config(page_title="股票分析 | TradeBot", page_icon="📊", layou
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def load_history(code: str) -> StockHistory:
-    start, end = default_history_range()
+def load_history(code: str, adjustment: str = "auto", history_scope: str = "MAX") -> StockHistory:
+    """Cache complete history; explicit arguments form stable cache keys."""
+    start, end = full_history_range()
     return YahooMarketDataProvider().get_stock_history(code, start, end)
 
 
@@ -52,6 +56,8 @@ with st.sidebar:
     if st.button("刷新行情", width="stretch"):
         load_history.clear()
         load_latest_quote.clear()
+        cached_calculate_indicators.clear()
+        cached_prepare_chart_data.clear()
         st.session_state["market_refreshed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         st.rerun()
     st.caption(f"最近刷新：{st.session_state.get('market_refreshed_at', '本次启动后尚未手动刷新')}")
@@ -73,39 +79,59 @@ if st.button("查询", type="primary") or code_input:
         st.session_state["stock_code"] = code
         with st.spinner("正在获取前复权日线行情…"):
             stock = load_history(code)
-        data = calculate_indicators(stock.prices)
-        statuses = latest_statuses(data)
         render_quasi_realtime_summary(stock)
+        period = st.segmented_control(
+            "K线显示周期", options=["1M", "3M", "6M", "1Y", "3Y", "5Y", "MAX"],
+            default="3M", key="stock_chart_period",
+        ) or "3M"
+        last_period = st.session_state.get("_stock_last_chart_period")
+        if last_period != period:
+            st.session_state["stock_chart_interval"] = "周K" if period in ("3Y", "5Y", "MAX") else "日K"
+            st.session_state["_stock_last_chart_period"] = period
+        interval = st.segmented_control(
+            "K线粒度", options=["日K", "周K", "月K"],
+            key="stock_chart_interval",
+        ) or "日K"
+        data = cached_prepare_chart_data(stock.prices, interval)
+        statuses = latest_statuses(data)
         render_status_cards([statuses[key] for key in ("trend", "macd", "rsi")])
-        st.plotly_chart(make_candlestick_chart(data, f"{stock.name}（{code}）日K与成交量"), width="stretch")
+        chart_data = filter_data_by_period(data, period)
+        st.plotly_chart(
+            create_candlestick_figure(
+                chart_data, period, f"{stock.name}（{code}）K线与成交量", interval=interval
+            ),
+            width="stretch", config={"scrollZoom": True, "displaylogo": False},
+        )
 
         st.subheader("技术指标")
-        macd_tab, rsi_tab, kdj_tab, boll_tab, volatility_tab = st.tabs(["MACD", "RSI", "KDJ", "BOLL", "波动率"])
-        with macd_tab:
+        selected_indicator = st.segmented_control(
+            "指标视图", options=["MACD", "RSI", "KDJ", "BOLL", "波动率"],
+            default="MACD", key="stock_indicator_view",
+        ) or "MACD"
+        row = data.iloc[-1]
+        if selected_indicator == "MACD":
             render_status_cards([statuses["macd"], statuses["volume"]])
-            st.metric("最新 DIF / DEA / 柱体", f"{data.iloc[-1]['dif']:.3f} / {data.iloc[-1]['dea']:.3f} / {data.iloc[-1]['macd_hist']:.3f}")
-            st.plotly_chart(make_macd_chart(data), width="stretch")
-        with rsi_tab:
+            st.metric("最新 DIF / DEA / 柱体", f"{row['dif']:.3f} / {row['dea']:.3f} / {row['macd_hist']:.3f}")
+            st.plotly_chart(make_macd_chart(chart_data), width="stretch")
+        elif selected_indicator == "RSI":
             render_status_cards([statuses["rsi"]])
-            st.metric("最新 RSI14", _number(data.iloc[-1]["rsi14"]))
-            st.plotly_chart(make_line_chart(data, ["rsi14"], ["RSI14"], "RSI（Wilder 14）", [30, 70]), width="stretch")
-        with kdj_tab:
-            row = data.iloc[-1]
+            st.metric("最新 RSI14", _number(row["rsi14"]))
+            st.plotly_chart(make_line_chart(chart_data, ["rsi14"], ["RSI14"], "RSI（Wilder 14）", [30, 70]), width="stretch")
+        elif selected_indicator == "KDJ":
             render_status_cards([] if row[["k", "d", "j"]].isna().all() else [IndicatorStatus("KDJ", "客观数值", f"K {_number(row['k'])}｜D {_number(row['d'])}｜J {_number(row['j'])}")])
             st.metric("最新 K / D / J", f"{_number(row['k'])} / {_number(row['d'])} / {_number(row['j'])}")
-            st.plotly_chart(make_line_chart(data, ["k", "d", "j"], ["K", "D", "J"], "KDJ（9, 3, 3）", [20, 80]), width="stretch")
-        with boll_tab:
+            st.plotly_chart(make_line_chart(chart_data, ["k", "d", "j"], ["K", "D", "J"], "KDJ（9, 3, 3）", [20, 80]), width="stretch")
+        elif selected_indicator == "BOLL":
             render_status_cards([statuses["boll"]])
-            row = data.iloc[-1]
             st.metric("最新上轨 / 中轨 / 下轨", f"{_number(row['boll_upper'])} / {_number(row['boll_mid'])} / {_number(row['boll_lower'])}")
-            st.plotly_chart(make_boll_chart(data), width="stretch")
-        with volatility_tab:
+            st.plotly_chart(make_boll_chart(chart_data), width="stretch")
+        else:
             render_status_cards([statuses["volatility"]])
-            value = data.iloc[-1]["volatility20"]
+            value = row["volatility20"]
             st.metric("最新 20 日年化波动率", "-" if value != value else f"{value:.2%}")
-            st.plotly_chart(make_line_chart(data, ["volatility20"], ["20日年化波动率"], "20 日历史波动率"), width="stretch")
+            st.plotly_chart(make_line_chart(chart_data, ["volatility20"], ["20日年化波动率"], "20 日历史波动率"), width="stretch")
         st.caption("所有状态均来自固定、可解释规则，仅作客观描述，不构成买卖建议。数据来源：Yahoo Finance。")
-    except (ValueError, MarketDataError) as exc:
+    except (ValueError, MarketDataError, ChartDataError) as exc:
         st.error(str(exc))
     except Exception:
         LOGGER.exception("Unexpected stock analysis error")

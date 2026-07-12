@@ -7,10 +7,11 @@ import pandas as pd
 import streamlit as st
 
 from components.portfolio_charts import allocation_chart, market_value_chart, pnl_amount_chart, pnl_percent_chart
+from components.metric_cards import render_metric_grid
 from database.db import DatabaseError, TransactionRepository
 from services.market_data import MarketDataError, YahooMarketDataProvider, default_history_range
 from services.portfolio_service import PortfolioValidationError, calculate_positions, summarize_portfolio, value_positions
-from utils.formatters import percent, price
+from utils.formatters import currency_compact, currency_full, percent, price
 from utils.logging_config import configure_logging
 
 configure_logging()
@@ -66,15 +67,19 @@ try:
     if usd_cny is not None:
         st.caption(f"USD/CNY 折算汇率：{usd_cny:.4f}｜汇率时间：{latest_price('CNY=X')[1]}")
 
-    cards = st.columns(7)
     metrics = [
         ("总资产", summary.total_assets), ("持仓总市值", summary.total_market_value),
         ("现金余额", summary.cash_balance), ("浮动盈亏", summary.unrealized_pnl),
         ("已实现盈亏", summary.realized_pnl), ("总盈亏", summary.total_pnl),
         ("当前持仓数量", summary.position_count),
     ]
-    for column, (label, value) in zip(cards, metrics):
-        column.metric(label, str(int(value)) if label == "当前持仓数量" else f"¥{value:,.2f}")
+    display_metrics = [
+        (label, str(int(value)), f"持仓标的数量：{int(value)}")
+        if label == "当前持仓数量"
+        else (label, currency_compact(value), f"精确金额：{currency_full(value)}")
+        for label, value in metrics
+    ]
+    render_metric_grid(display_metrics, columns_per_row=4)
 
     left, right = st.columns(2)
     left.plotly_chart(allocation_chart(valued, settings.cash_balance), width="stretch")

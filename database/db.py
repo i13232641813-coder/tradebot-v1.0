@@ -9,6 +9,7 @@ import sqlite3
 from typing import Iterator
 
 from database.models import AccountSettings, Transaction
+from database.migrations import migrate_simulation_schema
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "tradebot.db"
 
@@ -59,6 +60,7 @@ class TransactionRepository:
                 );
                 INSERT OR IGNORE INTO account_settings (id, cash_balance) VALUES (1, 0);
             """)
+            migrate_simulation_schema(connection)
 
     def list_all(self) -> list[Transaction]:
         with self._connect() as connection:

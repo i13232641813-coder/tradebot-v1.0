@@ -4,33 +4,12 @@ from collections.abc import Sequence
 
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 
 def _base_layout(fig: go.Figure, title: str, height: int = 430) -> go.Figure:
     fig.update_xaxes(rangebreaks=[{"bounds": ["sat", "mon"]}])
     fig.update_layout(title=title, height=height, hovermode="x unified", margin={"l": 20, "r": 20, "t": 55, "b": 20}, legend={"orientation": "h"})
     return fig
-
-
-def make_candlestick_chart(data: pd.DataFrame, title: str) -> go.Figure:
-    """Create candlesticks and volume from precomputed indicator data."""
-    colors = ["#16a34a" if close >= open_ else "#dc2626" for open_, close in zip(data["open"], data["close"])]
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.72, 0.28])
-    fig.add_trace(go.Candlestick(x=data["date"], open=data["open"], high=data["high"], low=data["low"], close=data["close"], name="日K"), row=1, col=1)
-    for window, color in {5: "#f59e0b", 10: "#3b82f6", 20: "#8b5cf6", 60: "#64748b"}.items():
-        fig.add_trace(go.Scatter(x=data["date"], y=data[f"ma{window}"], name=f"MA{window}", line={"width": 1.3, "color": color}), row=1, col=1)
-    fig.add_trace(go.Bar(x=data["date"], y=data["volume"], name="成交量", marker_color=colors), row=2, col=1)
-    for window in (5, 10):
-        fig.add_trace(go.Scatter(x=data["date"], y=data[f"vol_ma{window}"], name=f"VOL MA{window}", line={"width": 1.2}), row=2, col=1)
-    fig.update_xaxes(rangeselector={"buttons": [
-        {"count": 1, "label": "1月", "step": "month", "stepmode": "backward"},
-        {"count": 3, "label": "3月", "step": "month", "stepmode": "backward"},
-        {"count": 6, "label": "6月", "step": "month", "stepmode": "backward"},
-        {"count": 1, "label": "1年", "step": "year", "stepmode": "backward"},
-    ]}, row=1, col=1)
-    fig.update_layout(xaxis_rangeslider_visible=False)
-    return _base_layout(fig, title, 720)
 
 
 def make_macd_chart(data: pd.DataFrame) -> go.Figure:

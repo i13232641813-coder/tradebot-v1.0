@@ -70,14 +70,26 @@ class YahooMarketDataProvider(MarketDataProvider):
         symbol = self.yahoo_symbol(code)
         try:
             ticker = yf.Ticker(symbol)
-            # Yahoo treats end as exclusive, so include one extra calendar day.
-            raw = ticker.history(
-                start=start.isoformat(),
-                end=(end + timedelta(days=1)).isoformat(),
-                interval="1d",
-                auto_adjust=True,
-                actions=False,
-            )
+            history_options = {
+                "interval": "1d", "auto_adjust": True, "actions": False, "timeout": 15,
+            }
+            if start <= date(1990, 1, 1):
+                # Yahoo rejects some valid A-shares when an artificial pre-listing
+                # start date is supplied. period=max returns its earliest coverage.
+                raw = ticker.history(period="max", **history_options)
+                if raw is None or raw.empty:
+                    # Some Yahoo sessions reject period=max. Preserve the normal
+                    # bounded request as a fallback instead of returning fake data.
+                    raw = ticker.history(
+                        start=start.isoformat(), end=(end + timedelta(days=1)).isoformat(),
+                        **history_options,
+                    )
+            else:
+                # Yahoo treats end as exclusive, so include one extra calendar day.
+                raw = ticker.history(
+                    start=start.isoformat(), end=(end + timedelta(days=1)).isoformat(),
+                    **history_options,
+                )
         except Exception as exc:
             LOGGER.exception("Yahoo history request failed for %s", symbol)
             raise MarketDataError("Yahoo Finance 行情暂时不可用，请检查网络后重试") from exc
@@ -116,7 +128,7 @@ class YahooMarketDataProvider(MarketDataProvider):
         try:
             raw = yf.Ticker(symbol).history(
                 period="5d", interval="1m", auto_adjust=False,
-                actions=False,
+                actions=False, timeout=15,
             )
         except Exception as exc:
             LOGGER.exception("Yahoo intraday request failed for %s", symbol)
@@ -192,3 +204,8 @@ def default_history_range() -> tuple[date, date]:
     """Use a buffer beyond one year to cover holidays and chart windows."""
     end = date.today()
     return end - timedelta(days=400), end
+
+
+def full_history_range() -> tuple[date, date]:
+    """Request the longest practical mainland/US equity history."""
+    return date(1990, 1, 1), date.today()
