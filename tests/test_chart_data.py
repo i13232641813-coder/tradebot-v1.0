@@ -121,3 +121,16 @@ def test_all_missing_amount_stays_missing_after_aggregation() -> None:
     daily["amount"] = np.nan
     weekly = aggregate_ohlcv(daily, "周K")
     assert weekly["amount"].isna().all()
+
+
+def test_workbench_price_chart_is_compact_and_supports_boll_overlay() -> None:
+    visible = filter_data_by_period(history(), "3M")
+    figure = create_candlestick_figure(
+        visible, "3M", "workbench", show_boll=True,
+        include_volume_panel=False, show_volume_ma=False, height=460,
+    )
+    names = [trace.name for trace in figure.data]
+    assert figure.layout.height == 460
+    assert "成交量" not in names
+    assert {"BOLL上轨", "BOLL中轨", "BOLL下轨"}.issubset(names)
+    assert "yaxis2" not in figure.layout
